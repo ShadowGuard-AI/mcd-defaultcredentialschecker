@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import sys
 import logging
 import yaml
 import json
@@ -52,6 +53,9 @@ def load_custom_credentials(filepath):
     except yaml.YAMLError as e:
         logging.error(f"Error parsing custom credentials file: {filepath} - {e}")
         return None
+    except Exception as e:
+        logging.error(f"Error loading custom credentials file: {filepath} - {e}")
+        return None
 
 
 def load_rules(filepath):
@@ -74,6 +78,9 @@ def load_rules(filepath):
         return None
     except yaml.YAMLError as e:
         logging.error(f"Error parsing rules file: {filepath} - {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Error loading rules file: {filepath} - {e}")
         return None
 
 
@@ -190,19 +197,26 @@ def main():
     """
     args = setup_argparse()
 
-    # Load custom credentials if provided
+    # Load custom credentials if provided. A file the operator named
+    # that cannot be loaded is a failed run, not a reason to fall back
+    # to the built in dictionary without saying the scan changed.
     default_creds = DEFAULT_CREDENTIALS
     if args.custom_credentials:
         custom_credentials = load_custom_credentials(args.custom_credentials)
-        if custom_credentials:
-            default_creds = custom_credentials  # Override default credentials if custom ones are loaded
+        if custom_credentials is None:
+            logging.error(f"Failed to load custom credentials file: {args.custom_credentials}. Exiting.")
+            sys.exit(1)
+        default_creds = custom_credentials
 
-    # Load misconfiguration rules if provided
+    # Load misconfiguration rules if provided. The same rule applies:
+    # an unloadable rules file means the requested checks never ran.
     rules = []  # Initialize rules to an empty list
     if args.rules:
         loaded_rules = load_rules(args.rules)
-        if loaded_rules:
-            rules = loaded_rules
+        if loaded_rules is None:
+            logging.error(f"Failed to load rules file: {args.rules}. Exiting.")
+            sys.exit(1)
+        rules = loaded_rules
 
     # Determine if the path is a file or directory
     if os.path.isfile(args.path):
@@ -213,6 +227,7 @@ def main():
         scan_directory(args.path, default_creds, rules, args.verbose)
     else:
         logging.error(f"Invalid path: {args.path}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
