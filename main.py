@@ -11,6 +11,9 @@ from jsonpath_ng.ext import parse
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Default credentials dictionary
+# These are the values I check when the operator hands me nothing
+# of their own. They are a starter list from vendor manuals, not a
+# claim about what any given device still ships with.
 DEFAULT_CREDENTIALS = {
     "username": ["admin", "root", "user", "administrator"],
     "password": ["password", "admin", "root", "123456", "Password123!", "changeme"]
@@ -97,10 +100,22 @@ def check_file_for_default_credentials(filepath, default_credentials, verbose=Fa
         with open(filepath, 'r') as f:
             content = f.read()
 
+        # I trust the shape of a custom credentials file here. If a value
+        # in it is a plain string instead of a list, this loop walks it
+        # one character at a time and checks single letters. Nothing
+        # validates the file before this point.
         for credential_type, default_values in default_credentials.items():
             for value in default_values:
+                # The word boundaries keep a short value from firing inside a
+                # longer word, but they cannot tell context apart: the word
+                # password in a comment or a sentence still matches the password
+                # entry. I accept those false positives rather than guess at
+                # which lines are real assignments.
                 if re.search(r'\b' + re.escape(value) + r'\b', content, re.IGNORECASE):
                     logging.warning(f"Possible default {credential_type} found in {filepath}: {value}")
+                    # Verbose adds a print on top of the warning that was just logged,
+                    # so the finding lands in both streams. That duplication is the
+                    # point: a piped log keeps one copy and the terminal shows one.
                     if verbose:
                         print(f"Possible default {credential_type} found in {filepath}: {value}")
 
@@ -121,6 +136,10 @@ def is_iac_file(filename):
         bool: True if the file is an IaC template, False otherwise.
     """
     _, ext = os.path.splitext(filename)
+    # The extension list is wider than the parsers below can honour.
+    # .tf counts as IaC here, but native Terraform is neither JSON nor
+    # YAML, so those files fail parsing in the misconfiguration check
+    # and only ever get the plain text credential scan.
     return ext.lower() in IAC_FILE_EXTENSIONS
 
 
@@ -139,6 +158,9 @@ def check_file_for_misconfigurations(filepath, rules, verbose=False):
 
         # Attempt to parse the file content as JSON or YAML.
         try:
+            # I try JSON first because it is the stricter parse. YAML would
+            # accept most JSON anyway, so this order is about getting the
+            # clean failure that drops through to the YAML attempt.
             data = json.loads(file_content)
         except json.JSONDecodeError:
             try:
@@ -158,11 +180,18 @@ def check_file_for_misconfigurations(filepath, rules, verbose=False):
                             logging.warning(f"Misconfiguration detected in {filepath}: {rule['description']}")
                             if verbose:
                                 print(f"Misconfiguration detected in {filepath}: {rule['description']}")
+                        # Only two conditions exist in my handling: exists and equals.
+                        # Anything else a rules file spells is ignored in silence, no
+                        # warning and no match, which makes a typo in a rule look exactly
+                        # like a file that passed.
                         elif rule['condition'] == 'equals':
                             if match.value == rule['value']:
                                 logging.warning(f"Misconfiguration detected in {filepath}: {rule['description']}")
                                 if verbose:
                                     print(f"Misconfiguration detected in {filepath}: {rule['description']}")
+            # A broken rule is logged and the rest still run. I would rather
+            # report the rules that did work than lose the whole file's
+            # results to one bad jsonpath expression.
             except Exception as e:
                 logging.error(f"Error processing rule for {filepath}: {e}")
 
@@ -185,6 +214,10 @@ def scan_directory(path, default_credentials, rules, verbose=False):
     for root, _, files in os.walk(path):
         for file in files:
             filepath = os.path.join(root, file)
+            # The credential check runs on every file in the tree, whatever
+            # its type. Only the misconfiguration check is gated by extension
+            # below, so images and binaries get opened as text here and their
+            # decode failures show up as processing errors in the log.
             check_file_for_default_credentials(filepath, default_credentials, verbose)
 
             if is_iac_file(file):
